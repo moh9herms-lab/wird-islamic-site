@@ -1,0 +1,12 @@
+{
+  "name": "wird-islamic-website",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "موقع وِرد — مواقيت الصلاة والقرآن والأذكار والسبحة ومساعد بحث شرعي موثق",
+  "scripts": {
+    "start": "node server.mjs",
+    "start:env": "node --env-file=.env server.mjs"
+  },
+  "engines": {"node": ">=20"}
+}

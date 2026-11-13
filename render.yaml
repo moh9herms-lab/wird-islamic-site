@@ -1,0 +1,11 @@
+# Render Blueprint — free Node.js web service for وِرد.
+# Keep API keys ONLY in Render's Environment settings, never in public files.
+services:
+  - type: web
+    name: wird-islamic-site
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm install --omit=dev
+    startCommand: npm start
+    healthCheckPath: /api/status
