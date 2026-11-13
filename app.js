@@ -1,4 +1,4 @@
-/* وِرد — واجهة عربية مستقلة بدون مكتبات JavaScript خارجية */
+/* مِشكاة — واجهة عربية مستقلة بدون مكتبات JavaScript خارجية */
 'use strict';
 const $ = (selector, root=document) => root.querySelector(selector);
 const $$ = (selector, root=document) => [...root.querySelectorAll(selector)];
@@ -33,14 +33,44 @@ let prayerToday=null, prayerTomorrow=null, prayerEvents=[],activePage='home',las
 let dailyTimer=null,prayerReqId=0,refreshCalendarDay='';
 let quranMode=getLocal('readerMode','page'),quranScript=getLocal('readerScript','quran-uthmani');
 let quranPage=getLocal('readerPage',1), quranSurah=getLocal('readerSurah',1),quranData=null,quranIndex=[],quranFilter='all',quranReqId=0,selectedAyah=null;
-let quranReciter=getLocal('quranReciter','ar.alafasy');
+// الاحتفاظ باختيار القارئ القديم بعد التحديث مع ترحيل مفاتيحه الجديدة.
+const LEGACY_RECITERS={'ar.alafasy':'afasy','ar.abdurrahmaansudais':'sudais','ar.husary':'husary'};
+let quranReciter=LEGACY_RECITERS[getLocal('quranReciter','afasy')]||getLocal('quranReciter','afasy');
 let recitation={id:0, surah:0, name:'', state:'idle', url:''};
-// التسجيلات التالية ملفات متصلة كاملة للسور، لا ملفات صوتية منفصلة لكل آية.
-const FULL_SURAH_RECITERS={
-  'ar.alafasy':{edition:'ar.alafasy',bitrate:128},
-  'ar.abdurrahmaansudais':{edition:'ar.sudais',bitrate:192},
-  'ar.husary':{edition:'ar.husary',bitrate:128}
-};
+let reciterCatalog=new Map(),catalogFetchedAt=0,catalogPromise=null;
+const AFASY_FALLBACK='https://cdn.islamic.network/quran/audio-surah/128/ar.alafasy/';
+const padSurah=n=>String(n).padStart(3,'0');
+async function loadReciterCatalog(force=false){
+  if(!force&&reciterCatalog.size&&Date.now()-catalogFetchedAt<6*3600000)return reciterCatalog;
+  if(catalogPromise)return catalogPromise;
+  const hint=$('#reciterHint');
+  if(hint)hint.textContent='جارٍ تحديث روابط تسجيلات القرّاء من مكتبة MP3Quran...';
+  catalogPromise=(async()=>{
+    try{
+      const res=await fetch('/api/reciters',{headers:{'Accept':'application/json'},cache:'no-store'});
+      if(!res.ok)throw new Error('تعذر تحميل فهرس القراء');
+      const data=await res.json();
+      if(!Array.isArray(data.reciters)||!data.reciters.length)throw new Error('قائمة تسجيلات فارغة');
+      reciterCatalog=new Map(data.reciters.map(r=>[r.id,r]));
+      catalogFetchedAt=Date.now();
+      if(hint)hint.textContent=`${arabic(reciterCatalog.size)} قارئًا متاحًا بتسجيلات السور المتصلة. يمكنك تغيير القارئ ثم تشغيل السورة.`;
+      return reciterCatalog;
+    }catch(e){
+      if(hint)hint.textContent='تعذّر تحميل فهرس MP3Quran حاليًا. يمكن تجربة العفاسي، أو إعادة المحاولة عند اختيار قارئ آخر.';
+      return reciterCatalog;
+    }finally{catalogPromise=null}
+  })();
+  return catalogPromise;
+}
+function surahRecording(reciter,surah){
+  const entry=reciterCatalog.get(reciter);
+  if(entry){
+    if(Array.isArray(entry.surahs)&&entry.surahs.length&&!entry.surahs.includes(surah))return null;
+    return entry.server+padSurah(surah)+'.mp3';
+  }
+  if(reciter==='afasy')return AFASY_FALLBACK+surah+'.mp3';
+  return null;
+}
 let tafsirRequestId=0, tafsirReturnFocus=null;
 let adhkarCategory='morning', adhkarSearch='',adhkarCache=new Map(),adhkarItems=[],dhikrCounts=getLocal('dhikrCounts',{});
 let afterPrayerType=getLocal('afterPrayerType','dhuhr');
@@ -243,10 +273,20 @@ async function playQuran(){
   const first=quranData.ayahs[0];
   const surah=first.surah?.number||quranData.number||quranSurah;
   const name=first.surah?.name||quranData.name||`سورة ${arabic(surah)}`;
-  const edition=FULL_SURAH_RECITERS[quranReciter];
-  if(!edition){notify('هذا القارئ غير متاح للتلاوة المتصلة.');return;}
+  // أحدث قائمة مصاحف للقراء؛ ملفات الصوت مبنية على server من API وليس أسماء مجلدات مخمّنة.
   const id=++recitation.id;
-  const url=`https://cdn.islamic.network/quran/audio-surah/${edition.bitrate}/${edition.edition}/${surah}.mp3`;
+  recitation.state='loading';
+  recitation.surah=surah;
+  recitation.name=name;
+  setRecitationUI();
+  await loadReciterCatalog();
+  if(id!==recitation.id)return;
+  const url=surahRecording(quranReciter,surah);
+  if(!url){
+    stopQuranRecitation();
+    notify(reciterCatalog.has(quranReciter)?'تسجيل هذه السورة غير متاح لهذا القارئ؛ اختر قارئًا آخر.':'تعذّر جلب روابط هذا القارئ من المكتبة الصوتية. جرّب مجددًا بعد قليل.');
+    return;
+  }
   recitation.surah=surah;
   recitation.name=name;
   recitation.url=url;
@@ -272,7 +312,8 @@ function setupQuran(){
   $('#reciterSelect').value=quranReciter;
   $('#quranMode').addEventListener('change',e=>{quranMode=e.target.value;loadQuran();renderSurahList()});
   $('#quranScript').addEventListener('change',e=>{quranScript=e.target.value;loadQuran()});
-  $('#reciterSelect').addEventListener('change',e=>{stopQuranRecitation();quranReciter=e.target.value;setLocal('quranReciter',quranReciter)});
+  $('#reciterSelect').addEventListener('change',e=>{stopQuranRecitation();quranReciter=e.target.value;setLocal('quranReciter',quranReciter);if(!reciterCatalog.has(quranReciter))loadReciterCatalog(true)});
+  loadReciterCatalog();
   $('#surahSearch').addEventListener('input',renderSurahList);
   $('#toggleSurahBrowser').addEventListener('click',()=>{
     const sidebar=$('#surahBrowser'), closed=sidebar.classList.toggle('mobile-collapsed');
@@ -295,7 +336,7 @@ function setupQuran(){
   quranAudio.addEventListener('error',()=>{
     if(recitation.state==='idle')return;
     stopQuranRecitation();
-    notify('ملف التلاوة غير متاح حاليًا. اختر قارئًا آخر أو تحقق من الإنترنت.');
+    notify('تعذّر تشغيل الملف الصوتي لهذا القارئ أو هذه السورة. غيّر القارئ أو أعد المحاولة.');
   });
   const tafsirOverlay=$('#tafsirOverlay');
   $('#closeTafsir').addEventListener('click',closeTafsir);
