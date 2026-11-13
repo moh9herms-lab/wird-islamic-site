@@ -34,6 +34,8 @@ let dailyTimer=null,prayerReqId=0,refreshCalendarDay='';
 let quranMode=getLocal('readerMode','page'),quranScript=getLocal('readerScript','quran-uthmani');
 let quranPage=getLocal('readerPage',1), quranSurah=getLocal('readerSurah',1),quranData=null,quranIndex=[],quranFilter='all',quranReqId=0,selectedAyah=null;
 let quranReciter=getLocal('quranReciter','ar.alafasy');
+let recitation={id:0, surah:0, name:'', ayahs:[], index:0, state:'idle'};
+let tafsirRequestId=0, tafsirReturnFocus=null;
 let adhkarCategory='morning', adhkarSearch='',adhkarCache=new Map(),adhkarItems=[],dhikrCounts=getLocal('dhikrCounts',{});
 let tasbeehPhrase=getLocal('tasbeehPhrase','سبحان الله'),tasbeehGoal=getLocal('tasbeehGoal',33),tasbeehCounts=getLocal('tasbeehCounts',{}),tasbeehTotal=getLocal('tasbeehTotal',0);
 function notify(message){clearTimeout(toaster);const t=$('#toast');t.textContent=message;t.classList.add('show');toaster=setTimeout(()=>t.classList.remove('show'),3600)}
@@ -59,10 +61,10 @@ async function loadPrayerTimes(){const id=++prayerReqId;const city=getCity();con
  const urlFor=(day)=>{let base=settings.city==='geo'&&settings.coordinates?`https://api.aladhan.com/v1/timings/${day}?latitude=${encodeURIComponent(settings.coordinates.lat)}&longitude=${encodeURIComponent(settings.coordinates.lng)}`:`https://api.aladhan.com/v1/timingsByCity/${day}?city=${encodeURIComponent(city.city)}&country=${encodeURIComponent(city.country)}`;return `${base}&method=${settings.method}&iso8601=true`};
  try{const today=await fetchJSON(urlFor(dateSlug(new Date(),tz)));if(id!==prayerReqId)return;prayerToday=today;prayerEvents=parseEvents(today.timings,0);renderPrayer();clockTick();const tomorrow=await fetchJSON(urlFor(nextDateSlug(new Date(),tz)));if(id!==prayerReqId)return;prayerTomorrow=tomorrow;prayerEvents=[...parseEvents(today.timings,0),...parseEvents(tomorrow.timings,1)].sort((a,b)=>a.at-b.at);renderPrayer();clockTick()}catch(err){if(id!==prayerReqId)return;renderPrayer();$('#heroTime').textContent='لم يتوفر اتصال بخدمة المواقيت';notify('تعذّر تحميل المواقيت. تحقق من اتصال الإنترنت.')}}
 const audioPlayer=$('#audioPlayer');const quranAudio=$('#quranAudio');
-function playAdhan(){const src=ADHANS[settings.adhan]||ADHANS.afasy;try{quranAudio.pause();if(audioPlayer.src!==src)audioPlayer.src=src;audioPlayer.currentTime=0;audioPlayer.play().catch(()=>notify('اسمح بالتشغيل الصوتي أولًا عبر زر تجربة الأذان.'))}catch{notify('تعذّر تشغيل الأذان.')}}
+function playAdhan(){const src=ADHANS[settings.adhan]||ADHANS.afasy;try{stopQuranRecitation();if(audioPlayer.src!==src)audioPlayer.src=src;audioPlayer.currentTime=0;audioPlayer.play().catch(()=>notify('اسمح بالتشغيل الصوتي أولًا عبر زر تجربة الأذان.'))}catch{notify('تعذّر تشغيل الأذان.')}}
 function stopAdhan(){audioPlayer.pause();audioPlayer.currentTime=0}
 function checkAdhan(){if(!prayerEvents.length)return;const now=Date.now();for(const e of prayerEvents){if(now<e.at||now-e.at>12000)continue;const stamp=`${e.key}:${e.at}`;if(lastNotifyKey===stamp)continue;lastNotifyKey=stamp;if(settings.autoAdhan)playAdhan();if(settings.notify&&typeof Notification!=='undefined'&&Notification.permission==='granted'){new Notification(`حان الآن وقت صلاة ${e.name}`,{body:`${getCity().name} · ${e.time}`,tag:stamp})}}}
-function choosePage(page){const pages={home:'الرئيسية',prayer:'مواقيت الصلاة',quran:'القرآن الكريم',adhkar:'الأذكار والأدعية',tasbeeh:'السبحة الإلكترونية',ask:'المساعد الشرعي'};if(!pages[page])return;activePage=page;$$('.page').forEach(el=>el.classList.toggle('active',el.id===`page-${page}`));$$('.nav-btn').forEach(el=>el.classList.toggle('active',el.dataset.page===page));$$('.mobile-bottom-nav button').forEach(el=>el.classList.toggle('active',el.dataset.go===page));$('#breadcrumb').textContent=pages[page];$('#sidebar').classList.remove('open');window.scrollTo({top:0,behavior:'smooth'});if(page==='quran'&&!quranData)loadQuran();if(page==='adhkar'&&!adhkarItems.length)loadAdhkar()}
+function choosePage(page){const pages={home:'الرئيسية',prayer:'مواقيت الصلاة',quran:'القرآن الكريم',adhkar:'الأذكار والأدعية',tasbeeh:'السبحة الإلكترونية',ask:'المساعد الشرعي'};if(!pages[page])return;if(activePage==='quran'&&page!=='quran')closeTafsir();activePage=page;$$('.page').forEach(el=>el.classList.toggle('active',el.id===`page-${page}`));$$('.nav-btn').forEach(el=>el.classList.toggle('active',el.dataset.page===page));$$('.mobile-bottom-nav button').forEach(el=>el.classList.toggle('active',el.dataset.go===page));$('#breadcrumb').textContent=pages[page];$('#sidebar').classList.remove('open');window.scrollTo({top:0,behavior:'smooth'});if(page==='quran'&&!quranData)loadQuran();if(page==='adhkar'&&!adhkarItems.length)loadAdhkar()}
 function setupNavigation(){$$('#mainNav [data-page]').forEach(el=>el.addEventListener('click',()=>choosePage(el.dataset.page)));$$('[data-go]').forEach(el=>el.addEventListener('click',()=>{if(el.dataset.adhkar){adhkarCategory=el.dataset.adhkar;adhkarSearch='';$('#adhkarSearch').value='';loadAdhkar()}choosePage(el.dataset.go)}));$('#mobileMenu').addEventListener('click',()=>$('#sidebar').classList.toggle('open'));document.addEventListener('click',e=>{if($('#sidebar').classList.contains('open')&&!e.target.closest('#sidebar')&&!e.target.closest('#mobileMenu'))$('#sidebar').classList.remove('open')})}
 function showSettings(){const c=$('#citySelect');c.innerHTML=CITIES.map(o=>`<option value="${o.id}">${o.name}</option>`).join('')+`<option value="geo">موقعي الحالي (إحداثيات محفوظة)</option>`;c.value=settings.city;c.querySelector('[value="geo"]').disabled=!settings.coordinates;$('#methodSelect').value=settings.method;$('#adhanSelect').value=settings.adhan;$('#adhanToggle').checked=settings.autoAdhan;$('#notifyToggle').checked=settings.notify;$('#settingsOverlay').classList.remove('hidden');$('#closeSettings').focus()}
 function hideSettings(){$('#settingsOverlay').classList.add('hidden')}
@@ -70,13 +72,235 @@ function setupSettings(){['#sidebarSettings','#headerSettings','#cityButton','#p
 // Quran reader: all Quran and tafsir text is fetched from AlQuran Cloud on demand.
 async function loadQuranIndex(){try{quranIndex=await fetchJSON('https://api.alquran.cloud/v1/surah');renderSurahList()}catch{quranIndex=[{number:1,name:'سُورَةُ الْفَاتِحَةِ',englishName:'Al-Fatiha',revelationType:'Meccan',numberOfAyahs:7},{number:2,name:'سُورَةُ الْبَقَرَةِ',englishName:'Al-Baqara',revelationType:'Medinan',numberOfAyahs:286},{number:112,name:'سُورَةُ الْإِخْلَاصِ',englishName:'Al-Ikhlas',revelationType:'Meccan',numberOfAyahs:4}];renderSurahList()}}
 function renderSurahList(){const search=toPlain($('#surahSearch').value);const chosen=quranIndex.filter(s=>(quranFilter==='all'||s.revelationType===quranFilter)&&(toPlain(s.name).includes(search)||String(s.number).includes(search)||toPlain(s.englishName).includes(search)));$('#surahList').innerHTML=chosen.length?chosen.map(s=>`<button class="surah-item ${quranSurah===s.number&&quranMode==='surah'?'active':''}" data-surah="${s.number}"><span class="surah-index"><span>${arabic(s.number)}</span></span><span><span class="surah-item-name">${escapeHTML(s.name.replace('سُورَةُ ','').replace('سورة ','') )}</span><span class="surah-item-sub">${s.revelationType==='Meccan'?'مكية':'مدنية'} · ${arabic(s.numberOfAyahs)} آية</span></span></button>`).join(''):'<p class="empty-small">لا توجد سور مطابقة</p>';$$('[data-surah]',$('#surahList')).forEach(b=>b.addEventListener('click',()=>{quranSurah=+b.dataset.surah;quranMode='surah';$('#quranMode').value='surah';loadQuran();renderSurahList()}))}
-async function loadQuran(){const id=++quranReqId;$('#mushafPage').innerHTML='<div class="reader-loading">جارٍ تحميل آيات القرآن الكريم...</div>';selectedAyah=null;setLocal('readerMode',quranMode);setLocal('readerPage',quranPage);setLocal('readerSurah',quranSurah);setLocal('readerScript',quranScript);const endpoint=quranMode==='page'?`page/${quranPage}`:`surah/${quranSurah}`;
- try{const data=await fetchJSON(`https://api.alquran.cloud/v1/${endpoint}/${quranScript}`);if(quranReqId!==id)return;quranData=data;const ayahs=data.ayahs||[];if(!ayahs.length)throw Error('empty');const first=ayahs[0];quranSurah=first.surah?.number||data.number||quranSurah;const su=first.surah?.name||data.name||'القرآن الكريم';$('#readerTitle').textContent=quranMode==='page'?`الصفحة ${arabic(quranPage)} · ${su}`:su;
- $('#readerMeta').textContent=quranMode==='page'?`الجزء ${arabic(first.juz)} · صفحة ${arabic(quranPage)} من ${arabic(604)}`:`${arabic(ayahs.length)} آية · ${data.revelationType==='Meccan'?'مكية':'مدنية'}`;
- let html='<div class="quran-ayahs">';let previousSurah=0;for(const a of ayahs){const s=a.surah?.number||data.number||quranSurah;if(s!==previousSurah){if(previousSurah)html+='</div><div class="quran-ayahs">';if(a.numberInSurah===1){html+=`</div><div class="surah-divider">${escapeHTML(a.surah?.name||data.name||'')}</div>`;if(s!==9&&s!==1)html+='<div class="basmala">بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ</div>';html+='<div class="quran-ayahs">'}previousSurah=s}html+=`<span class="ayah-span" role="button" tabindex="0" title="اضغط لعرض التفسير الميسر" data-ayah="${a.numberInSurah}" data-sura="${s}">${escapeHTML(a.text)} <span class="ayah-num">﴿${arabic(a.numberInSurah)}﴾</span></span> `}html+='</div><div id="tafsirContainer"></div>';$('#mushafPage').innerHTML=html;$$('.ayah-span',$('#mushafPage')).forEach(el=>{el.addEventListener('click',()=>showTafsir(+el.dataset.sura,+el.dataset.ayah,el));el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();el.click()}})});$('#readerPageIndicator').textContent=quranMode==='page'?`صفحة ${arabic(quranPage)} من ${arabic(604)}`:`سورة ${arabic(quranSurah)} من ${arabic(114)}`;$('#quranPrev').disabled=quranMode==='page'?quranPage<=1:quranSurah<=1;$('#quranNext').disabled=quranMode==='page'?quranPage>=604:quranSurah>=114;renderSurahList()}catch(e){if(quranReqId!==id)return;quranData=null;$('#mushafPage').innerHTML='<p class="reader-error">تعذّر جلب آيات القرآن من الخدمة. تحقق من اتصال الإنترنت ثم اضغط «التالي» أو غيّر طريقة التصفح.</p>';$('#readerMeta').textContent='غير متصل'}}
-async function showTafsir(sura,ayah,el){selectedAyah={sura,ayah};$$('.ayah-span.selected').forEach(x=>x.classList.remove('selected'));el.classList.add('selected');$('#tafsirContainer').innerHTML=`<div class="tafsir-panel"><h3>التفسير الميسر · سورة ${arabic(sura)}، آية ${arabic(ayah)}</h3><p>جارٍ تحميل التفسير...</p></div>`;$('#tafsirContainer').scrollIntoView({block:'nearest',behavior:'smooth'});try{const data=await fetchJSON(`https://api.alquran.cloud/v1/ayah/${sura}:${ayah}/ar.muyassar`);if(!selectedAyah||selectedAyah.sura!==sura||selectedAyah.ayah!==ayah)return;const box=$('#tafsirContainer');box.innerHTML='<div class="tafsir-panel"><button class="tafsir-close" aria-label="إغلاق التفسير">×</button><h3>التفسير الميسر · '+arabic(sura)+':'+arabic(ayah)+'</h3><p></p><a href="https://qurancomplex.gov.sa/quran-dev/" target="_blank" rel="noopener noreferrer">المصدر الأصلي: مجمع الملك فهد لطباعة المصحف الشريف</a></div>';$('.tafsir-panel p',box).textContent=data.text||'التفسير غير متاح لهذه الآية';$('.tafsir-close',box).addEventListener('click',()=>{box.innerHTML='';el.classList.remove('selected')})}catch{$('#tafsirContainer').innerHTML='<div class="tafsir-panel"><h3>التفسير الميسر</h3><p>تعذّر تحميل نص التفسير في الوقت الحالي. حاول لاحقًا.</p></div>'}}
-async function playQuran(){if(!quranData?.ayahs?.length){notify('حمّل صفحة القرآن أولًا');return}const a=quranData.ayahs[0];const s=a.surah?.number||quranSurah;const ref=`${s}:${a.numberInSurah}`;try{const data=await fetchJSON(`https://api.alquran.cloud/v1/ayah/${ref}/${quranReciter}`);if(!data.audio)throw Error('no-audio');stopAdhan();quranAudio.src=data.audio;await quranAudio.play();notify(`بدأت التلاوة — الآية ${arabic(a.numberInSurah)}`)}catch{notify('تعذّر تشغيل التلاوة. جرّب قارئًا آخر أو تحقق من الاتصال.')}}
-function setupQuran(){$('#quranMode').value=quranMode;$('#quranScript').value=quranScript;$('#reciterSelect').value=quranReciter;$('#quranMode').addEventListener('change',e=>{quranMode=e.target.value;loadQuran();renderSurahList()});$('#quranScript').addEventListener('change',e=>{quranScript=e.target.value;loadQuran()});$('#reciterSelect').addEventListener('change',e=>{quranReciter=e.target.value;setLocal('quranReciter',quranReciter)});$('#surahSearch').addEventListener('input',renderSurahList);$$('.filter-chip').forEach(b=>b.addEventListener('click',()=>{quranFilter=b.dataset.revelation;$$('.filter-chip').forEach(x=>x.classList.toggle('active',x===b));renderSurahList()}));$('#quranNext').addEventListener('click',()=>{if(quranMode==='page')quranPage=Math.min(604,quranPage+1);else quranSurah=Math.min(114,quranSurah+1);loadQuran()});$('#quranPrev').addEventListener('click',()=>{if(quranMode==='page')quranPage=Math.max(1,quranPage-1);else quranSurah=Math.max(1,quranSurah-1);loadQuran()});$('#readerPlay').addEventListener('click',playQuran);$('#resumeReading').addEventListener('click',()=>{quranMode=getLocal('readerMode','page');quranPage=getLocal('readerPage',1);quranSurah=getLocal('readerSurah',1);$('#quranMode').value=quranMode;loadQuran();notify('تم فتح آخر موضع محفوظ')});loadQuranIndex()}
+async function loadQuran({preserveRecitation=false}={}){
+  if(!preserveRecitation)stopQuranRecitation();
+  closeTafsir();
+  const id=++quranReqId;
+  const container=$('#mushafPage');
+  container.innerHTML='<div class="reader-loading">جارٍ تحميل آيات القرآن الكريم...</div>';
+  quranData=null;
+  setLocal('readerMode',quranMode);
+  setLocal('readerPage',quranPage);
+  setLocal('readerSurah',quranSurah);
+  setLocal('readerScript',quranScript);
+  const endpoint=quranMode==='page'?`page/${quranPage}`:`surah/${quranSurah}`;
+  try{
+    const data=await fetchJSON(`https://api.alquran.cloud/v1/${endpoint}/${quranScript}`);
+    if(quranReqId!==id)return;
+    const ayahs=data.ayahs||[];
+    if(!ayahs.length)throw Error('empty');
+    quranData=data;
+    const first=ayahs[0];
+    quranSurah=first.surah?.number||data.number||quranSurah;
+    const surahName=first.surah?.name||data.name||'القرآن الكريم';
+    $('#readerTitle').textContent=quranMode==='page'?`الصفحة ${arabic(quranPage)} · ${surahName}`:surahName;
+    $('#readerMeta').textContent=quranMode==='page'?`الجزء ${arabic(first.juz)} · صفحة ${arabic(quranPage)} من ${arabic(604)}`:`${arabic(ayahs.length)} آية · ${data.revelationType==='Meccan'?'مكية':'مدنية'}`;
+    const shownPage=quranMode==='page'?quranPage:(first.page||1);
+    const surahLabel=first.surah?.name||data.name||'القرآن الكريم';
+    let html=`<div class="mushaf-paper"><div class="mushaf-folio-head"><span>الجزء ${arabic(first.juz||1)}</span><span class="folio-ornament" aria-hidden="true">۞</span><span>${escapeHTML(surahLabel)}</span></div><div class="mushaf-inner"><div class="quran-ayahs">`;
+
+    let previousSurah=0;
+    for(const a of ayahs){
+      const s=a.surah?.number||data.number||quranSurah;
+      if(s!==previousSurah){
+        if(previousSurah)html+='</div><div class="quran-ayahs">';
+        if(a.numberInSurah===1){
+          html+=`</div><div class="surah-divider">${escapeHTML(a.surah?.name||data.name||'')}</div>`;
+          if(s!==9&&s!==1)html+='<div class="basmala">بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ</div>';
+          html+='<div class="quran-ayahs">';
+        }
+        previousSurah=s;
+      }
+      html+=`<span class="ayah-span" role="button" tabindex="0" title="اضغط لعرض التفسير الميسر" data-ayah="${a.numberInSurah}" data-sura="${s}">${escapeHTML(a.text)} <span class="ayah-num">﴿${arabic(a.numberInSurah)}﴾</span></span> `;
+    }
+    html+='</div></div><div class="mushaf-folio-foot"><span>۞</span><span>'+ (quranMode==='page'?'صفحة '+arabic(shownPage):escapeHTML(surahLabel)) +'</span><span>۞</span></div></div>';
+    container.innerHTML=html;
+    $$('.ayah-span',container).forEach(el=>{
+      el.addEventListener('click',()=>showTafsir(+el.dataset.sura,+el.dataset.ayah,el));
+      el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();el.click()}});
+    });
+    $('#readerPageIndicator').textContent=quranMode==='page'?`صفحة ${arabic(quranPage)} من ${arabic(604)}`:`سورة ${arabic(quranSurah)} من ${arabic(114)}`;
+    $('#quranPrev').disabled=quranMode==='page'?quranPage<=1:quranSurah<=1;
+    $('#quranNext').disabled=quranMode==='page'?quranPage>=604:quranSurah>=114;
+    $('#recitationStatus').textContent=quranMode==='page'?'تشغيل التلاوة يقرأ السورة الظاهرة من بدايتها حتى نهايتها.':'اضغط تشغيل لتلاوة السورة كاملة من أول آية إلى آخر آية.';
+    renderSurahList();
+    if(preserveRecitation)setRecitationUI();
+  }catch(e){
+    if(quranReqId!==id)return;
+    quranData=null;
+    container.innerHTML='<p class="reader-error">تعذّر جلب آيات القرآن من الخدمة. تحقق من اتصال الإنترنت ثم اضغط «التالي» أو غيّر طريقة التصفح.</p>';
+    $('#readerMeta').textContent='غير متصل';
+  }
+}
+function closeTafsir(){
+  ++tafsirRequestId; // يمنع أي رد قديم من إعادة فتح نافذة مغلقة
+  const overlay=$('#tafsirOverlay');
+  if(overlay.classList.contains('hidden'))return;
+  overlay.classList.add('hidden');
+  document.body.classList.remove('tafsir-open');
+  $$('.ayah-span.selected').forEach(el=>el.classList.remove('selected'));
+  const previous=tafsirReturnFocus;
+  tafsirReturnFocus=null;
+  if(previous?.isConnected)previous.focus({preventScroll:true});
+}
+async function showTafsir(sura,ayah,el){
+  const id=++tafsirRequestId;
+  $$('.ayah-span.selected').forEach(x=>x.classList.remove('selected'));
+  el.classList.add('selected');
+  tafsirReturnFocus=el;
+  const verse=quranData?.ayahs?.find(a=>(a.surah?.number||quranData.number)===sura&&a.numberInSurah===ayah);
+  const surahName=verse?.surah?.name||quranIndex.find(s=>s.number===sura)?.name||`سورة ${arabic(sura)}`;
+  $('#tafsirTitle').textContent=`التفسير الميسر · ${surahName}، الآية ${arabic(ayah)}`;
+  $('#tafsirVerseText').textContent=verse?.text||'';
+  $('#tafsirText').textContent='جارٍ تحميل التفسير...';
+  $('#tafsirOverlay').classList.remove('hidden');
+  document.body.classList.add('tafsir-open');
+  $('#closeTafsir').focus({preventScroll:true});
+  try{
+    const data=await fetchJSON(`https://api.alquran.cloud/v1/ayah/${sura}:${ayah}/ar.muyassar`);
+    if(id!==tafsirRequestId)return;
+    $('#tafsirText').textContent=data.text||'التفسير غير متاح لهذه الآية.';
+  }catch{
+    if(id!==tafsirRequestId)return;
+    $('#tafsirText').textContent='تعذّر تحميل التفسير في الوقت الحالي. تحقق من الاتصال وحاول مرة أخرى.';
+  }
+}
+function setRecitationUI(){
+  const playing=recitation.state==='playing';
+  const paused=recitation.state==='paused';
+  const loading=recitation.state==='loading';
+  const control=$('#readerPlay');
+  control.disabled=loading;
+  $('#readerStop').disabled=recitation.state==='idle';
+  control.querySelector('use').setAttribute('href',playing?'#i-pause':'#i-play');
+  const description=playing?'إيقاف مؤقت':paused?'متابعة التلاوة':'تشغيل السورة كاملة';
+  control.title=description;
+  control.setAttribute('aria-label',description);
+  $$('.ayah-span.reciting').forEach(el=>el.classList.remove('reciting'));
+  if(recitation.state==='idle')return;
+  const a=recitation.ayahs[recitation.index];
+  const label=loading?'جارٍ تجهيز التلاوة...':`${playing?'يُتلى الآن':paused?'التلاوة متوقفة مؤقتًا':'جاري التحميل'} · ${recitation.name} · الآية ${arabic(a?.numberInSurah||1)} من ${arabic(recitation.ayahs.length)}`;
+  $('#recitationStatus').textContent=label;
+  if(a){
+    const current=$(`.ayah-span[data-sura="${recitation.surah}"][data-ayah="${a.numberInSurah}"]`,$('#mushafPage'));
+    if(current)current.classList.add('reciting');
+  }
+}
+function stopQuranRecitation(){
+  ++recitation.id;
+  quranAudio.pause();
+  quranAudio.removeAttribute('src');
+  quranAudio.load();
+  recitation.surah=0;
+  recitation.name='';
+  recitation.ayahs=[];
+  recitation.index=0;
+  recitation.state='idle';
+  $('#recitationStatus').textContent='اضغط تشغيل للاستماع إلى السورة كاملة.';
+  setRecitationUI();
+}
+function playCurrentAyah(id){
+  if(id!==recitation.id)return;
+  if(recitation.index>=recitation.ayahs.length){
+    stopQuranRecitation();
+    notify('اكتملت تلاوة السورة، الحمد لله.');
+    return;
+  }
+  const ayah=recitation.ayahs[recitation.index];
+  if(!ayah?.audio){stopQuranRecitation();notify('الرابط الصوتي لهذه الآية غير متاح.');return;}
+  quranAudio.src=ayah.audio;
+  recitation.state='playing';
+  // تابع انتقال آيات السورة بين صفحات المصحف من غير قطع التلاوة.
+  if(quranMode==='page'&&Number.isInteger(ayah.page)&&ayah.page!==quranPage&&quranPage>=1&&quranPage<=604){
+    quranPage=ayah.page;
+    loadQuran({preserveRecitation:true});
+  }
+  setRecitationUI();
+  quranAudio.play().catch(()=>{
+    if(recitation.id!==id||recitation.state!=='playing')return;
+    recitation.state='paused';
+    setRecitationUI();
+    notify('تعذّر التشغيل التلقائي. اضغط زر المتابعة أو اختر قارئًا آخر.');
+  });
+}
+async function playQuran(){
+  if(recitation.state==='playing'){
+    quranAudio.pause();
+    recitation.state='paused';
+    setRecitationUI();
+    return;
+  }
+  if(recitation.state==='paused'){
+    // عند الوقوف بين آيتين، قد لا يكون هناك ملف صوتي مفتوح.
+    try{
+      await quranAudio.play();
+      recitation.state='playing';
+      setRecitationUI();
+    }catch{notify('لم يبدأ الصوت. حاول مرة أخرى.');}
+    return;
+  }
+  if(recitation.state==='loading')return;
+  if(!quranData?.ayahs?.length){notify('حمّل صفحة القرآن أولًا');return;}
+  const first=quranData.ayahs[0];
+  const surah=first.surah?.number||quranData.number||quranSurah;
+  const name=first.surah?.name||quranData.name||`سورة ${arabic(surah)}`;
+  const id=++recitation.id;
+  recitation.surah=surah;
+  recitation.name=name;
+  recitation.ayahs=[];
+  recitation.index=0;
+  recitation.state='loading';
+  setRecitationUI();
+  try{
+    const data=await fetchJSON(`https://api.alquran.cloud/v1/surah/${surah}/${quranReciter}`);
+    if(id!==recitation.id)return;
+    if(!Array.isArray(data.ayahs)||!data.ayahs.length||!data.ayahs.every(a=>a.audio))throw Error('audio unavailable');
+    recitation.ayahs=data.ayahs;
+    stopAdhan();
+    playCurrentAyah(id);
+  }catch{
+    if(id!==recitation.id)return;
+    stopQuranRecitation();
+    notify('تعذّر تحميل تلاوة السورة بهذا القارئ. اختر قارئًا آخر أو تحقق من الاتصال.');
+  }
+}
+function setupQuran(){
+  $('#quranMode').value=quranMode;
+  $('#quranScript').value=quranScript;
+  $('#reciterSelect').value=quranReciter;
+  $('#quranMode').addEventListener('change',e=>{quranMode=e.target.value;loadQuran();renderSurahList()});
+  $('#quranScript').addEventListener('change',e=>{quranScript=e.target.value;loadQuran()});
+  $('#reciterSelect').addEventListener('change',e=>{stopQuranRecitation();quranReciter=e.target.value;setLocal('quranReciter',quranReciter)});
+  $('#surahSearch').addEventListener('input',renderSurahList);
+  $('#toggleSurahBrowser').addEventListener('click',()=>{
+    const sidebar=$('#surahBrowser'), closed=sidebar.classList.toggle('mobile-collapsed');
+    $('#toggleSurahBrowser').textContent=closed?'فتح الفهرس ⌄':'إغلاق الفهرس ⌃';
+    $('#toggleSurahBrowser').setAttribute('aria-expanded',String(!closed));
+  });
+  $$('.filter-chip').forEach(b=>b.addEventListener('click',()=>{quranFilter=b.dataset.revelation;$$('.filter-chip').forEach(x=>x.classList.toggle('active',x===b));renderSurahList()}));
+  $('#quranNext').addEventListener('click',()=>{if(quranMode==='page')quranPage=Math.min(604,quranPage+1);else quranSurah=Math.min(114,quranSurah+1);loadQuran({preserveRecitation:quranMode==='page'})});
+  $('#quranPrev').addEventListener('click',()=>{if(quranMode==='page')quranPage=Math.max(1,quranPage-1);else quranSurah=Math.max(1,quranSurah-1);loadQuran({preserveRecitation:quranMode==='page'})});
+  $('#readerPlay').addEventListener('click',playQuran);
+  $('#readerStop').addEventListener('click',stopQuranRecitation);
+  quranAudio.addEventListener('ended',()=>{
+    if(recitation.state!=='playing')return;
+    const id=recitation.id;
+    recitation.index++;
+    playCurrentAyah(id);
+  });
+  quranAudio.addEventListener('error',()=>{
+    if(recitation.state!=='playing')return;
+    stopQuranRecitation();
+    notify('تعذّر تحميل الصوت. تحقق من الإنترنت أو جرّب قارئًا آخر.');
+  });
+  const tafsirOverlay=$('#tafsirOverlay');
+  $('#closeTafsir').addEventListener('click',closeTafsir);
+  $('#tafsirDone').addEventListener('click',closeTafsir);
+  tafsirOverlay.addEventListener('click',e=>{if(e.target===tafsirOverlay)closeTafsir()});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!tafsirOverlay.classList.contains('hidden'))closeTafsir()});
+  $('#resumeReading').addEventListener('click',()=>{quranMode=getLocal('readerMode','page');quranPage=getLocal('readerPage',1);quranSurah=getLocal('readerSurah',1);$('#quranMode').value=quranMode;loadQuran();notify('تم فتح آخر موضع محفوظ')});
+  loadQuranIndex();
+}
 // Categories are downloaded on demand from a public, attributed azkar dataset.
 const ADHKAR_CATEGORIES=[
  {id:'morning',label:'أذكار الصباح',file:'azkar-sabah.json'}, {id:'evening',label:'أذكار المساء',file:'azkar-masaa.json'},
