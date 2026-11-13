@@ -61,3 +61,14 @@ body.tafsir-open{overflow:hidden}
  .surah-toggle{display:inline-block;border:1px solid #dce9dd;border-radius:7px;padding:5px 9px;background:#f4f8f3;color:#347858;font-size:10px}
  .surah-browser-head span{margin-right:auto}
 }
+
+/* الإصدار الثالث: اختيار الصلاة وتكرار أذكارها، بدون تغيير بنية الموقع */
+.after-prayer-picker{display:flex;flex-wrap:wrap;align-items:center;gap:9px;margin:13px 0 2px;color:#37664c;font-size:12px}
+.after-prayer-picker.hidden{display:none}
+.after-prayer-picker label{font-weight:700;color:#286349}
+.after-prayer-picker select{border:1px solid #c9dfcf;border-radius:8px;background:#fff;color:#265f45;padding:7px 13px;font:inherit}
+.after-prayer-picker span{font-size:11px;color:#718a79;max-width:310px}
+.adhkar-heading{align-items:flex-start}
+.adhkar-heading>div:first-child{min-width:0;max-width:100%}
+.adhkar-heading #adhkarSource{line-height:1.85}
+@media(max-width:620px){.adhkar-heading{flex-wrap:wrap}.after-prayer-picker{align-items:flex-start}.after-prayer-picker span{width:100%}}

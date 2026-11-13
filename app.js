@@ -34,9 +34,16 @@ let dailyTimer=null,prayerReqId=0,refreshCalendarDay='';
 let quranMode=getLocal('readerMode','page'),quranScript=getLocal('readerScript','quran-uthmani');
 let quranPage=getLocal('readerPage',1), quranSurah=getLocal('readerSurah',1),quranData=null,quranIndex=[],quranFilter='all',quranReqId=0,selectedAyah=null;
 let quranReciter=getLocal('quranReciter','ar.alafasy');
-let recitation={id:0, surah:0, name:'', ayahs:[], index:0, state:'idle'};
+let recitation={id:0, surah:0, name:'', state:'idle', url:''};
+// التسجيلات التالية ملفات متصلة كاملة للسور، لا ملفات صوتية منفصلة لكل آية.
+const FULL_SURAH_RECITERS={
+  'ar.alafasy':{edition:'ar.alafasy',bitrate:128},
+  'ar.abdurrahmaansudais':{edition:'ar.sudais',bitrate:192},
+  'ar.husary':{edition:'ar.husary',bitrate:128}
+};
 let tafsirRequestId=0, tafsirReturnFocus=null;
 let adhkarCategory='morning', adhkarSearch='',adhkarCache=new Map(),adhkarItems=[],dhikrCounts=getLocal('dhikrCounts',{});
+let afterPrayerType=getLocal('afterPrayerType','dhuhr');
 let tasbeehPhrase=getLocal('tasbeehPhrase','سبحان الله'),tasbeehGoal=getLocal('tasbeehGoal',33),tasbeehCounts=getLocal('tasbeehCounts',{}),tasbeehTotal=getLocal('tasbeehTotal',0);
 function notify(message){clearTimeout(toaster);const t=$('#toast');t.textContent=message;t.classList.add('show');toaster=setTimeout(()=>t.classList.remove('show'),3600)}
 async function fetchJSON(url){const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),17000);try{const r=await fetch(url,{signal:controller.signal,headers:{'Accept':'application/json'}});if(!r.ok)throw new Error('HTTP '+r.status);const data=await r.json();if(data.code!==undefined&&data.code!==200)throw new Error(data.status||'API failure');return data.data??data}finally{clearTimeout(timeout)}}
@@ -71,6 +78,25 @@ function hideSettings(){$('#settingsOverlay').classList.add('hidden')}
 function setupSettings(){['#sidebarSettings','#headerSettings','#cityButton','#prayerSettings'].forEach(id=>$(id).addEventListener('click',showSettings));$('#closeSettings').addEventListener('click',hideSettings);$('#settingsOverlay').addEventListener('click',e=>{if(e.target.id==='settingsOverlay')hideSettings()});document.addEventListener('keydown',e=>{if(e.key==='Escape')hideSettings()});$('#useGeolocation').addEventListener('click',()=>{if(!navigator.geolocation){notify('المتصفح لا يدعم تحديد الموقع');return}navigator.geolocation.getCurrentPosition(pos=>{settings.coordinates={lat:pos.coords.latitude,lng:pos.coords.longitude};settings.city='geo';CITIES.find(c=>c.id==='geo')||CITIES.push({id:'geo',name:'موقعي الحالي',city:'',country:'',timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||'Asia/Riyadh'});$('#citySelect').querySelector('[value="geo"]').disabled=false;$('#citySelect').value='geo';notify('تم تحديد الموقع. اضغط حفظ التغييرات.')},()=>notify('تعذّر تحديد الموقع أو لم تسمح بالوصول إليه.'),{enableHighAccuracy:false,timeout:10000,maximumAge:60000})});$('#modalTestAdhan').addEventListener('click',()=>{const prev=settings.adhan;settings.adhan=$('#adhanSelect').value;playAdhan();settings.adhan=prev});$('#saveSettings').addEventListener('click',async()=>{settings.city=$('#citySelect').value;settings.method=$('#methodSelect').value;settings.adhan=$('#adhanSelect').value;settings.autoAdhan=$('#adhanToggle').checked;settings.notify=$('#notifyToggle').checked;if(settings.city==='geo'&&!CITIES.some(c=>c.id==='geo'))CITIES.push({id:'geo',name:'موقعي الحالي',city:'',country:'',timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||'Asia/Riyadh'});setLocal('settings',settings);$('#prayerAdhanSelect').value=settings.adhan;hideSettings();notify('تم حفظ إعداداتك.');if(settings.notify&&'Notification'in window&&Notification.permission==='default'){try{await Notification.requestPermission()}catch{}}loadPrayerTimes()});$('#testAdhan').addEventListener('click',()=>{settings.adhan=$('#prayerAdhanSelect').value;setLocal('settings',settings);playAdhan()});$('#prayerAdhanSelect').addEventListener('change',e=>{settings.adhan=e.target.value;setLocal('settings',settings)});$('#stopAdhan').addEventListener('click',()=>{stopAdhan();notify('تم إيقاف الأذان.')});$('#prayerAdhanSelect').value=settings.adhan}
 // Quran reader: all Quran and tafsir text is fetched from AlQuran Cloud on demand.
 async function loadQuranIndex(){try{quranIndex=await fetchJSON('https://api.alquran.cloud/v1/surah');renderSurahList()}catch{quranIndex=[{number:1,name:'سُورَةُ الْفَاتِحَةِ',englishName:'Al-Fatiha',revelationType:'Meccan',numberOfAyahs:7},{number:2,name:'سُورَةُ الْبَقَرَةِ',englishName:'Al-Baqara',revelationType:'Medinan',numberOfAyahs:286},{number:112,name:'سُورَةُ الْإِخْلَاصِ',englishName:'Al-Ikhlas',revelationType:'Meccan',numberOfAyahs:4}];renderSurahList()}}
+// بعض إصدارات النص القرآني تلحق البسملة بأول آية، مع أنها ظاهرة منفصلة أعلى السورة.
+// لا نحذف البسملة من الفاتحة: فهي الآية الأولى فيها. ولا نضيف بسملة في التوبة.
+function omitDuplicatedBasmala(text,surah,ayah){
+  if(ayah!==1||surah===1||surah===9)return text;
+  const normalized='بسماللهالرحمنالرحيم';
+  let read=''; let until=0;
+  for(let i=0;i<text.length&&i<110;i++){
+    const ch=text[i];
+    if(/[\u064B-\u065F\u0670\u06D6-\u06ED\u0640\s]/u.test(ch))continue;
+    // الألفات القرآنية والهمزات بأنواعها تكتب بطرق مختلفة بين الإصدارات.
+    const plain=ch.replace(/[ٱإأآ]/gu,'ا');
+    read+=plain;
+    if(!normalized.startsWith(read))return text;
+    if(read===normalized){until=i+1;break;}
+  }
+  if(!until)return text;
+  const rest=text.slice(until).replace(/^[\s\u064B-\u065F\u0670\u06D6-\u06ED\u0640۞۝]*/u,'').trimStart();
+  return rest||text;
+}
 function renderSurahList(){const search=toPlain($('#surahSearch').value);const chosen=quranIndex.filter(s=>(quranFilter==='all'||s.revelationType===quranFilter)&&(toPlain(s.name).includes(search)||String(s.number).includes(search)||toPlain(s.englishName).includes(search)));$('#surahList').innerHTML=chosen.length?chosen.map(s=>`<button class="surah-item ${quranSurah===s.number&&quranMode==='surah'?'active':''}" data-surah="${s.number}"><span class="surah-index"><span>${arabic(s.number)}</span></span><span><span class="surah-item-name">${escapeHTML(s.name.replace('سُورَةُ ','').replace('سورة ','') )}</span><span class="surah-item-sub">${s.revelationType==='Meccan'?'مكية':'مدنية'} · ${arabic(s.numberOfAyahs)} آية</span></span></button>`).join(''):'<p class="empty-small">لا توجد سور مطابقة</p>';$$('[data-surah]',$('#surahList')).forEach(b=>b.addEventListener('click',()=>{quranSurah=+b.dataset.surah;quranMode='surah';$('#quranMode').value='surah';loadQuran();renderSurahList()}))}
 async function loadQuran({preserveRecitation=false}={}){
   if(!preserveRecitation)stopQuranRecitation();
@@ -111,7 +137,7 @@ async function loadQuran({preserveRecitation=false}={}){
         }
         previousSurah=s;
       }
-      html+=`<span class="ayah-span" role="button" tabindex="0" title="اضغط لعرض التفسير الميسر" data-ayah="${a.numberInSurah}" data-sura="${s}">${escapeHTML(a.text)} <span class="ayah-num">﴿${arabic(a.numberInSurah)}﴾</span></span> `;
+      html+=`<span class="ayah-span" role="button" tabindex="0" title="اضغط لعرض التفسير الميسر" data-ayah="${a.numberInSurah}" data-sura="${s}">${escapeHTML(omitDuplicatedBasmala(a.text,s,a.numberInSurah))} <span class="ayah-num">﴿${arabic(a.numberInSurah)}﴾</span></span> `;
     }
     html+='</div></div><div class="mushaf-folio-foot"><span>۞</span><span>'+ (quranMode==='page'?'صفحة '+arabic(shownPage):escapeHTML(surahLabel)) +'</span><span>۞</span></div></div>';
     container.innerHTML=html;
@@ -122,7 +148,7 @@ async function loadQuran({preserveRecitation=false}={}){
     $('#readerPageIndicator').textContent=quranMode==='page'?`صفحة ${arabic(quranPage)} من ${arabic(604)}`:`سورة ${arabic(quranSurah)} من ${arabic(114)}`;
     $('#quranPrev').disabled=quranMode==='page'?quranPage<=1:quranSurah<=1;
     $('#quranNext').disabled=quranMode==='page'?quranPage>=604:quranSurah>=114;
-    $('#recitationStatus').textContent=quranMode==='page'?'تشغيل التلاوة يقرأ السورة الظاهرة من بدايتها حتى نهايتها.':'اضغط تشغيل لتلاوة السورة كاملة من أول آية إلى آخر آية.';
+    $('#recitationStatus').textContent=quranMode==='page'?'تشغيل التلاوة يقرأ السورة الظاهرة من بدايتها حتى نهايتها في تسجيل صوتي واحد. يمكن تغيير الصفحة يدويًا أثناء الاستماع.':'اضغط تشغيل لتلاوة السورة كاملة دون انقطاع بين ملفات الآيات.';
     renderSurahList();
     if(preserveRecitation)setRecitationUI();
   }catch(e){
@@ -165,6 +191,7 @@ async function showTafsir(sura,ayah,el){
     $('#tafsirText').textContent='تعذّر تحميل التفسير في الوقت الحالي. تحقق من الاتصال وحاول مرة أخرى.';
   }
 }
+// استخدام ملف واحد متصل يمنع توقفات تحميل كل آية بين آيات السورة.
 function setRecitationUI(){
   const playing=recitation.state==='playing';
   const paused=recitation.state==='paused';
@@ -173,18 +200,16 @@ function setRecitationUI(){
   control.disabled=loading;
   $('#readerStop').disabled=recitation.state==='idle';
   control.querySelector('use').setAttribute('href',playing?'#i-pause':'#i-play');
-  const description=playing?'إيقاف مؤقت':paused?'متابعة التلاوة':'تشغيل السورة كاملة';
-  control.title=description;
-  control.setAttribute('aria-label',description);
+  const action=playing?'إيقاف مؤقت':paused?'متابعة التلاوة':'تشغيل السورة كاملة';
+  control.title=action;
+  control.setAttribute('aria-label',action);
   $$('.ayah-span.reciting').forEach(el=>el.classList.remove('reciting'));
   if(recitation.state==='idle')return;
-  const a=recitation.ayahs[recitation.index];
-  const label=loading?'جارٍ تجهيز التلاوة...':`${playing?'يُتلى الآن':paused?'التلاوة متوقفة مؤقتًا':'جاري التحميل'} · ${recitation.name} · الآية ${arabic(a?.numberInSurah||1)} من ${arabic(recitation.ayahs.length)}`;
-  $('#recitationStatus').textContent=label;
-  if(a){
-    const current=$(`.ayah-span[data-sura="${recitation.surah}"][data-ayah="${a.numberInSurah}"]`,$('#mushafPage'));
-    if(current)current.classList.add('reciting');
-  }
+  const label=loading?'جارٍ تجهيز تسجيل السورة المتصل...':playing?'التلاوة متصلة الآن':paused?'التلاوة متوقفة مؤقتًا':'جاهز للتلاوة';
+  const total=Number.isFinite(quranAudio.duration)&&quranAudio.duration>0?quranAudio.duration:0;
+  const played=Number.isFinite(quranAudio.currentTime)?quranAudio.currentTime:0;
+  const fmt=t=>`${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;
+  $('#recitationStatus').textContent=`${label} · ${recitation.name}${total?` · ${fmt(played)} / ${fmt(total)}`:''} · من أول السورة إلى آخرها دون فواصل بين الملفات`;
 }
 function stopQuranRecitation(){
   ++recitation.id;
@@ -193,35 +218,10 @@ function stopQuranRecitation(){
   quranAudio.load();
   recitation.surah=0;
   recitation.name='';
-  recitation.ayahs=[];
-  recitation.index=0;
+  recitation.url='';
   recitation.state='idle';
-  $('#recitationStatus').textContent='اضغط تشغيل للاستماع إلى السورة كاملة.';
+  $('#recitationStatus').textContent='اضغط تشغيل للاستماع إلى السورة كاملة بصوت متصل.';
   setRecitationUI();
-}
-function playCurrentAyah(id){
-  if(id!==recitation.id)return;
-  if(recitation.index>=recitation.ayahs.length){
-    stopQuranRecitation();
-    notify('اكتملت تلاوة السورة، الحمد لله.');
-    return;
-  }
-  const ayah=recitation.ayahs[recitation.index];
-  if(!ayah?.audio){stopQuranRecitation();notify('الرابط الصوتي لهذه الآية غير متاح.');return;}
-  quranAudio.src=ayah.audio;
-  recitation.state='playing';
-  // تابع انتقال آيات السورة بين صفحات المصحف من غير قطع التلاوة.
-  if(quranMode==='page'&&Number.isInteger(ayah.page)&&ayah.page!==quranPage&&quranPage>=1&&quranPage<=604){
-    quranPage=ayah.page;
-    loadQuran({preserveRecitation:true});
-  }
-  setRecitationUI();
-  quranAudio.play().catch(()=>{
-    if(recitation.id!==id||recitation.state!=='playing')return;
-    recitation.state='paused';
-    setRecitationUI();
-    notify('تعذّر التشغيل التلقائي. اضغط زر المتابعة أو اختر قارئًا آخر.');
-  });
 }
 async function playQuran(){
   if(recitation.state==='playing'){
@@ -231,12 +231,11 @@ async function playQuran(){
     return;
   }
   if(recitation.state==='paused'){
-    // عند الوقوف بين آيتين، قد لا يكون هناك ملف صوتي مفتوح.
     try{
       await quranAudio.play();
       recitation.state='playing';
       setRecitationUI();
-    }catch{notify('لم يبدأ الصوت. حاول مرة أخرى.');}
+    }catch{notify('تعذّر استئناف الصوت. حاول مرة أخرى.');}
     return;
   }
   if(recitation.state==='loading')return;
@@ -244,24 +243,27 @@ async function playQuran(){
   const first=quranData.ayahs[0];
   const surah=first.surah?.number||quranData.number||quranSurah;
   const name=first.surah?.name||quranData.name||`سورة ${arabic(surah)}`;
+  const edition=FULL_SURAH_RECITERS[quranReciter];
+  if(!edition){notify('هذا القارئ غير متاح للتلاوة المتصلة.');return;}
   const id=++recitation.id;
+  const url=`https://cdn.islamic.network/quran/audio-surah/${edition.bitrate}/${edition.edition}/${surah}.mp3`;
   recitation.surah=surah;
   recitation.name=name;
-  recitation.ayahs=[];
-  recitation.index=0;
+  recitation.url=url;
   recitation.state='loading';
+  stopAdhan();
+  quranAudio.src=url;
+  quranAudio.load();
   setRecitationUI();
   try{
-    const data=await fetchJSON(`https://api.alquran.cloud/v1/surah/${surah}/${quranReciter}`);
+    await quranAudio.play();
     if(id!==recitation.id)return;
-    if(!Array.isArray(data.ayahs)||!data.ayahs.length||!data.ayahs.every(a=>a.audio))throw Error('audio unavailable');
-    recitation.ayahs=data.ayahs;
-    stopAdhan();
-    playCurrentAyah(id);
+    recitation.state='playing';
+    setRecitationUI();
   }catch{
     if(id!==recitation.id)return;
     stopQuranRecitation();
-    notify('تعذّر تحميل تلاوة السورة بهذا القارئ. اختر قارئًا آخر أو تحقق من الاتصال.');
+    notify('تعذّر تشغيل التسجيل المتصل؛ تأكد من الإنترنت أو اختر قارئًا آخر.');
   }
 }
 function setupQuran(){
@@ -283,15 +285,17 @@ function setupQuran(){
   $('#readerPlay').addEventListener('click',playQuran);
   $('#readerStop').addEventListener('click',stopQuranRecitation);
   quranAudio.addEventListener('ended',()=>{
-    if(recitation.state!=='playing')return;
-    const id=recitation.id;
-    recitation.index++;
-    playCurrentAyah(id);
+    if(recitation.state==='idle')return;
+    stopQuranRecitation();
+    notify('اكتملت تلاوة السورة، الحمد لله.');
+  });
+  quranAudio.addEventListener('timeupdate',()=>{
+    if(recitation.state==='playing')setRecitationUI();
   });
   quranAudio.addEventListener('error',()=>{
-    if(recitation.state!=='playing')return;
+    if(recitation.state==='idle')return;
     stopQuranRecitation();
-    notify('تعذّر تحميل الصوت. تحقق من الإنترنت أو جرّب قارئًا آخر.');
+    notify('ملف التلاوة غير متاح حاليًا. اختر قارئًا آخر أو تحقق من الإنترنت.');
   });
   const tafsirOverlay=$('#tafsirOverlay');
   $('#closeTafsir').addEventListener('click',closeTafsir);
@@ -328,13 +332,136 @@ const ADHKAR_FALLBACK={
  deceased:[{zekr:'اللَّهُمَّ اغْفِرْ لَهُ وَارْحَمْهُ وَعَافِهِ وَاعْفُ عَنْهُ',repeat:1,reference:'من الدعاء للميت ـ صحيح مسلم'}],
  deceasedall:[{zekr:'رَبَّنَا اغْفِرْ لَنَا وَلِإِخْوَانِنَا الَّذِينَ سَبَقُونَا بِالْإِيمَانِ',repeat:1,reference:'سورة الحشر: ١٠'}]
 };
+
+// هذه الأبواب محفوظة داخل الموقع ولا تعتمد على ملف خارجي قد يتعطل.
+// النصوص أدعية مأثورة وآيات قرآنية، مع بيان المصدر والعدد الصحيح حيث ورد.
+const AYAT_ALKURSI='اللَّهُ لَا إِلَٰهَ إِلَّا هُوَ الْحَيُّ الْقَيُّومُ ۚ لَا تَأْخُذُهُ سِنَةٌ وَلَا نَوْمٌ ۚ لَهُ مَا فِي السَّمَاوَاتِ وَمَا فِي الْأَرْضِ ۗ مَنْ ذَا الَّذِي يَشْفَعُ عِنْدَهُ إِلَّا بِإِذْنِهِ ۚ يَعْلَمُ مَا بَيْنَ أَيْدِيهِمْ وَمَا خَلْفَهُمْ ۖ وَلَا يُحِيطُونَ بِشَيْءٍ مِنْ عِلْمِهِ إِلَّا بِمَا شَاءَ ۚ وَسِعَ كُرْسِيُّهُ السَّمَاوَاتِ وَالْأَرْضَ ۖ وَلَا يَئُودُهُ حِفْظُهُمَا ۚ وَهُوَ الْعَلِيُّ الْعَظِيمُ';
+const SURAH_IKHLAS='قُلْ هُوَ اللَّهُ أَحَدٌ ۝ اللَّهُ الصَّمَدُ ۝ لَمْ يَلِدْ وَلَمْ يُولَدْ ۝ وَلَمْ يَكُنْ لَهُ كُفُوًا أَحَدٌ';
+const SURAH_FALAQ='قُلْ أَعُوذُ بِرَبِّ الْفَلَقِ ۝ مِنْ شَرِّ مَا خَلَقَ ۝ وَمِنْ شَرِّ غَاسِقٍ إِذَا وَقَبَ ۝ وَمِنْ شَرِّ النَّفَّاثَاتِ فِي الْعُقَدِ ۝ وَمِنْ شَرِّ حَاسِدٍ إِذَا حَسَدَ';
+const SURAH_NAS='قُلْ أَعُوذُ بِرَبِّ النَّاسِ ۝ مَلِكِ النَّاسِ ۝ إِلَٰهِ النَّاسِ ۝ مِنْ شَرِّ الْوَسْوَاسِ الْخَنَّاسِ ۝ الَّذِي يُوَسْوِسُ فِي صُدُورِ النَّاسِ ۝ مِنَ الْجِنَّةِ وَالنَّاسِ';
+const CORE_ADHKAR={
+ after:[
+  {zekr:'أَسْتَغْفِرُ اللَّهَ',repeat:3,reference:'صحيح مسلم · عقب السلام'},
+  {zekr:'اللَّهُمَّ أَنْتَ السَّلَامُ، وَمِنْكَ السَّلَامُ، تَبَارَكْتَ يَا ذَا الْجَلَالِ وَالْإِكْرَامِ',repeat:1,reference:'صحيح مسلم · عقب السلام'},
+  {zekr:'لَا إِلَهَ إِلَّا اللَّهُ وَحْدَهُ لَا شَرِيكَ لَهُ، لَهُ الْمُلْكُ وَلَهُ الْحَمْدُ، وَهُوَ عَلَى كُلِّ شَيْءٍ قَدِيرٌ، لَا حَوْلَ وَلَا قُوَّةَ إِلَّا بِاللَّهِ',repeat:1,reference:'صحيح مسلم · من الأذكار بعد الصلاة'},
+  {zekr:'اللَّهُمَّ لَا مَانِعَ لِمَا أَعْطَيْتَ، وَلَا مُعْطِيَ لِمَا مَنَعْتَ، وَلَا يَنْفَعُ ذَا الْجَدِّ مِنْكَ الْجَدُّ',repeat:1,reference:'صحيح البخاري ومسلم'},
+  {zekr:'سُبْحَانَ اللَّهِ',repeat:33,reference:'صحيح مسلم · ثلاث وثلاثون مرة'},
+  {zekr:'الْحَمْدُ لِلَّهِ',repeat:33,reference:'صحيح مسلم · ثلاث وثلاثون مرة'},
+  {zekr:'اللَّهُ أَكْبَرُ',repeat:33,reference:'صحيح مسلم · ثلاث وثلاثون مرة'},
+  {zekr:'لَا إِلَهَ إِلَّا اللَّهُ وَحْدَهُ لَا شَرِيكَ لَهُ، لَهُ الْمُلْكُ وَلَهُ الْحَمْدُ، وَهُوَ عَلَى كُلِّ شَيْءٍ قَدِيرٌ',repeat:1,reference:'صحيح مسلم · تتمة المئة بعد التسبيح والتحميد والتكبير'},
+  {zekr:AYAT_ALKURSI,repeat:1,reference:'آية الكرسي · البقرة: ٢٥٥'},
+  {zekr:SURAH_IKHLAS,repeat:1,repeatFajrMaghrib:3,reference:'سورة الإخلاص · مرة بعد الظهر والعصر والعشاء، وثلاثًا بعد الفجر والمغرب'},
+  {zekr:SURAH_FALAQ,repeat:1,repeatFajrMaghrib:3,reference:'سورة الفلق · مرة بعد الظهر والعصر والعشاء، وثلاثًا بعد الفجر والمغرب'},
+  {zekr:SURAH_NAS,repeat:1,repeatFajrMaghrib:3,reference:'سورة الناس · مرة بعد الظهر والعصر والعشاء، وثلاثًا بعد الفجر والمغرب'}
+ ],
+ sleep:[
+  {zekr:AYAT_ALKURSI,repeat:1,reference:'آية الكرسي · البقرة: ٢٥٥ · تقرأ قبل النوم'},
+  {zekr:SURAH_IKHLAS,repeat:3,reference:'سورة الإخلاص · مع المعوذتين ثلاث مرات قبل النوم'},
+  {zekr:SURAH_FALAQ,repeat:3,reference:'سورة الفلق · مع الإخلاص والناس ثلاث مرات قبل النوم'},
+  {zekr:SURAH_NAS,repeat:3,reference:'سورة الناس · مع الإخلاص والفلق ثلاث مرات قبل النوم'},
+  {zekr:'بِاسْمِكَ اللَّهُمَّ أَمُوتُ وَأَحْيَا',repeat:1,reference:'صحيح البخاري'},
+  {zekr:'بِاسْمِكَ رَبِّي وَضَعْتُ جَنْبِي، وَبِكَ أَرْفَعُهُ، إِنْ أَمْسَكْتَ نَفْسِي فَارْحَمْهَا، وَإِنْ أَرْسَلْتَهَا فَاحْفَظْهَا بِمَا تَحْفَظُ بِهِ عِبَادَكَ الصَّالِحِينَ',repeat:1,reference:'صحيح البخاري ومسلم'},
+  {zekr:'اللَّهُمَّ قِنِي عَذَابَكَ يَوْمَ تَبْعَثُ عِبَادَكَ',repeat:3,reference:'أبو داود والترمذي · ثلاث مرات'},
+  {zekr:'سُبْحَانَ اللَّهِ',repeat:33,reference:'الصحيحان · ذكر النوم'},
+  {zekr:'الْحَمْدُ لِلَّهِ',repeat:33,reference:'الصحيحان · ذكر النوم'},
+  {zekr:'اللَّهُ أَكْبَرُ',repeat:34,reference:'الصحيحان · ذكر النوم'},
+  {zekr:'اللَّهُمَّ أَسْلَمْتُ نَفْسِي إِلَيْكَ، وَفَوَّضْتُ أَمْرِي إِلَيْكَ، وَوَجَّهْتُ وَجْهِي إِلَيْكَ، وَأَلْجَأْتُ ظَهْرِي إِلَيْكَ، رَغْبَةً وَرَهْبَةً إِلَيْكَ، لَا مَلْجَأَ وَلَا مَنْجَا مِنْكَ إِلَّا إِلَيْكَ، آمَنْتُ بِكِتَابِكَ الَّذِي أَنْزَلْتَ، وَبِنَبِيِّكَ الَّذِي أَرْسَلْتَ',repeat:1,reference:'صحيح البخاري ومسلم · اجعله آخر كلامك قبل النوم'}
+ ],
+ brief:[
+  {zekr:AYAT_ALKURSI,repeat:1,reference:'آية الكرسي · من الأذكار المشروعة في اليوم والليلة'},
+  {zekr:SURAH_IKHLAS,repeat:3,reference:'سورة الإخلاص · ثلاثًا في الصباح أو المساء'},
+  {zekr:SURAH_FALAQ,repeat:3,reference:'سورة الفلق · ثلاثًا في الصباح أو المساء'},
+  {zekr:SURAH_NAS,repeat:3,reference:'سورة الناس · ثلاثًا في الصباح أو المساء'},
+  {zekr:'بِسْمِ اللَّهِ الَّذِي لَا يَضُرُّ مَعَ اسْمِهِ شَيْءٌ فِي الْأَرْضِ وَلَا فِي السَّمَاءِ وَهُوَ السَّمِيعُ الْعَلِيمُ',repeat:3,reference:'أبو داود والترمذي · ثلاثًا صباحًا ومساءً'},
+  {zekr:'أَعُوذُ بِكَلِمَاتِ اللَّهِ التَّامَّاتِ مِنْ شَرِّ مَا خَلَقَ',repeat:3,reference:'صحيح مسلم · من أذكار المساء'},
+  {zekr:'سُبْحَانَ اللَّهِ وَبِحَمْدِهِ',repeat:100,reference:'صحيح مسلم · مئة مرة في اليوم'}
+ ]
+};
+const CORE_ADHKAR_SOURCES={
+  after:'المصدر: أذكار أدبار الصلوات · موقع ابن باز | بعد الفجر والمغرب تتكرر السور الثلاث ٣ مرات',
+  sleep:'المصدر: السنن العملية قبل النوم · موقع ابن باز، والأحاديث المشار إليها في كل بطاقة',
+  brief:'مختارات مختصرة من الأذكار الثابتة؛ ليست صيغة واجبة أو ترتيبًا مخصصًا في السنة'
+};
 const ADHKAR_BASE='https://cdn.jsdelivr.net/gh/mohammed-2-5/islamic-library-data@master/azkar/';
-function normalizeDhikr(entry,i,cat){const z=entry.zekr||entry.text||entry.zikr||entry.arabic||'';let reps=parseInt(entry.repeat||entry.count||1,10);if(!Number.isInteger(reps)||reps<1||reps>1000)reps=1;return {id:`${cat}-${i}`,category:cat,text:z,repeat:reps,ref:entry.reference||entry.description||entry.bless||''}}
-async function getAdhkar(cat){if(adhkarCache.has(cat))return adhkarCache.get(cat);const c=ADHKAR_CATEGORIES.find(x=>x.id===cat);if(!c)return[];let raw;let fallback=false;try{raw=await fetchJSON(ADHKAR_BASE+c.file);if(!Array.isArray(raw))raw=raw.data||raw.azkar||raw.items;if(!Array.isArray(raw))throw Error('invalid')}catch{raw=ADHKAR_FALLBACK[cat]||[];fallback=true}const items=raw.map((a,i)=>normalizeDhikr(a,i,cat)).filter(a=>a.text);const value={items,fallback};adhkarCache.set(cat,value);return value}
-async function loadAdhkar(){const myCat=adhkarCategory;$('#adhkarList').innerHTML='<div class="loading-card">جارٍ تحميل الأذكار...</div>';$('#adhkarCurrentTitle').textContent=ADHKAR_CATEGORIES.find(c=>c.id===myCat)?.label||'الأذكار';renderAdhkarCategories();const result=await getAdhkar(myCat);if(myCat!==adhkarCategory)return;adhkarItems=result.items;$('#adhkarSource').textContent=result.fallback?'نسخة مختصرة متاحة حاليًا · تعذّر تنزيل المجموعة الكاملة':'محتوى الأذكار من مجموعة بيانات إسلامية مفتوحة · يُنصح بمراجعة التخريج قبل النشر';renderAdhkar()}
-function renderAdhkarCategories(){$('#adhkarCategories').innerHTML=ADHKAR_CATEGORIES.map(c=>`<button class="category-pill ${c.id===adhkarCategory?'active':''}" data-cat="${c.id}">${c.label}</button>`).join('');$$('[data-cat]',$('#adhkarCategories')).forEach(b=>b.addEventListener('click',()=>{adhkarCategory=b.dataset.cat;loadAdhkar()}))}
-function renderAdhkar(){const data=adhkarItems.filter(a=>toPlain(a.text).includes(toPlain(adhkarSearch)));let completed=0;const html=data.map((a,i)=>{const have=Math.min(dhikrCounts[a.id]||0,a.repeat);if(have>=a.repeat)completed++;return `<article class="dhikr-card"><div class="dhikr-top"><span class="dhikr-num">الذكر ${arabic(i+1)}</span><span class="dhikr-repeat">التكرار: ${arabic(a.repeat)}</span></div><div class="dhikr-content">${escapeHTML(a.text)}</div><div class="dhikr-foot"><span class="dhikr-ref">${escapeHTML(String(a.ref).slice(0,270))}</span><button class="dhikr-countbtn ${have>=a.repeat?'done':''}" data-dhikr="${a.id}">${have>=a.repeat?'✓ اكتمل':`${arabic(have)} / ${arabic(a.repeat)} · اضغط للعد`}</button></div></article>`}).join('');$('#adhkarList').innerHTML=html||'<div class="loading-card">لا توجد نتائج مطابقة لهذا البحث.</div>';$('#adhkarProgress').textContent=`اكتمل ${arabic(completed)} من ${arabic(data.length)} ذكر`;$$('[data-dhikr]',$('#adhkarList')).forEach(b=>b.addEventListener('click',()=>{const a=adhkarItems.find(x=>x.id===b.dataset.dhikr);if(!a)return;dhikrCounts[a.id]=Math.min(a.repeat,(dhikrCounts[a.id]||0)+1);setLocal('dhikrCounts',dhikrCounts);renderAdhkar()}))}
-function setupAdhkar(){$('#adhkarSearch').addEventListener('input',e=>{adhkarSearch=e.target.value;renderAdhkar()});$('#resetAdhkar').addEventListener('click',()=>{if(confirm('تصفير عدادات الأذكار في هذا الباب؟')){adhkarItems.forEach(a=>delete dhikrCounts[a.id]);setLocal('dhikrCounts',dhikrCounts);renderAdhkar();notify('تم تصفير عدادات هذا الباب')}});renderAdhkarCategories()}
+function normalizeDhikr(entry,i,cat){
+  const z=entry.zekr||entry.text||entry.zikr||entry.arabic||'';
+  let reps=parseInt(entry.repeat||entry.count||1,10);
+  if(!Number.isInteger(reps)||reps<1||reps>1000)reps=1;
+  return {id:`${cat}-${i}`,category:cat,text:z,repeat:reps,repeatFajrMaghrib:entry.repeatFajrMaghrib||0,ref:entry.reference||entry.description||entry.bless||''};
+}
+async function getAdhkar(cat){
+  if(adhkarCache.has(cat))return adhkarCache.get(cat);
+  const category=ADHKAR_CATEGORIES.find(x=>x.id===cat);
+  if(!category)return {items:[],fallback:true};
+  let raw;let fallback=false;
+  if(CORE_ADHKAR[cat]){
+    raw=CORE_ADHKAR[cat];
+  }else{
+    try{
+      raw=await fetchJSON(ADHKAR_BASE+category.file);
+      if(!Array.isArray(raw))raw=raw.data||raw.azkar||raw.items;
+      if(!Array.isArray(raw))throw Error('invalid');
+    }catch{raw=ADHKAR_FALLBACK[cat]||[];fallback=true;}
+  }
+  const items=raw.map((a,i)=>normalizeDhikr(a,i,cat)).filter(a=>a.text);
+  const value={items,fallback};adhkarCache.set(cat,value);return value;
+}
+function currentAdhkarItems(){
+  return adhkarItems.map(a=>adhkarCategory==='after'?{
+    ...a,
+    id:`${a.id}-${afterPrayerType}`,
+    repeat:a.repeatFajrMaghrib&&['fajr','maghrib'].includes(afterPrayerType)?a.repeatFajrMaghrib:a.repeat
+  }:a).filter(a=>toPlain(a.text).includes(toPlain(adhkarSearch)));
+}
+async function loadAdhkar(){
+  const myCat=adhkarCategory;
+  $('#adhkarList').innerHTML='<div class="loading-card">جارٍ تحميل الأذكار...</div>';
+  $('#adhkarCurrentTitle').textContent=ADHKAR_CATEGORIES.find(c=>c.id===myCat)?.label||'الأذكار';
+  $('#afterPrayerPicker').classList.toggle('hidden',myCat!=='after');
+  $('#afterPrayerSelect').value=afterPrayerType;
+  renderAdhkarCategories();
+  const result=await getAdhkar(myCat);
+  if(myCat!==adhkarCategory)return;
+  adhkarItems=result.items;
+  $('#adhkarSource').textContent=CORE_ADHKAR_SOURCES[myCat]||(
+    result.fallback?'نسخة مختصرة متاحة حاليًا · تعذّر تنزيل المجموعة الكاملة':'محتوى الأذكار من مجموعة بيانات إسلامية مفتوحة · يُنصح بمراجعة التخريج قبل النشر'
+  );
+  renderAdhkar();
+}
+function renderAdhkarCategories(){
+  $('#adhkarCategories').innerHTML=ADHKAR_CATEGORIES.map(c=>`<button class="category-pill ${c.id===adhkarCategory?'active':''}" data-cat="${c.id}">${c.label}</button>`).join('');
+  $$('[data-cat]',$('#adhkarCategories')).forEach(b=>b.addEventListener('click',()=>{adhkarCategory=b.dataset.cat;loadAdhkar()}));
+}
+function renderAdhkar(){
+  const data=currentAdhkarItems();
+  let completed=0;
+  const html=data.map((a,i)=>{
+    const have=Math.min(dhikrCounts[a.id]||0,a.repeat);
+    if(have>=a.repeat)completed++;
+    return `<article class="dhikr-card"><div class="dhikr-top"><span class="dhikr-num">الذكر ${arabic(i+1)}</span><span class="dhikr-repeat">التكرار: ${arabic(a.repeat)}</span></div><div class="dhikr-content">${escapeHTML(a.text)}</div><div class="dhikr-foot"><span class="dhikr-ref">${escapeHTML(String(a.ref).slice(0,270))}</span><button class="dhikr-countbtn ${have>=a.repeat?'done':''}" data-dhikr="${a.id}">${have>=a.repeat?'✓ اكتمل':`${arabic(have)} / ${arabic(a.repeat)} · اضغط للعد`}</button></div></article>`;
+  }).join('');
+  $('#adhkarList').innerHTML=html||'<div class="loading-card">لا توجد نتائج مطابقة لهذا البحث.</div>';
+  $('#adhkarProgress').textContent=`اكتمل ${arabic(completed)} من ${arabic(data.length)} ذكر`;
+  $$('[data-dhikr]',$('#adhkarList')).forEach(b=>b.addEventListener('click',()=>{
+    const a=data.find(x=>x.id===b.dataset.dhikr);if(!a)return;
+    dhikrCounts[a.id]=Math.min(a.repeat,(dhikrCounts[a.id]||0)+1);
+    setLocal('dhikrCounts',dhikrCounts);renderAdhkar();
+  }));
+}
+function setupAdhkar(){
+  $('#adhkarSearch').addEventListener('input',e=>{adhkarSearch=e.target.value;renderAdhkar()});
+  $('#afterPrayerSelect').value=afterPrayerType;
+  $('#afterPrayerSelect').addEventListener('change',e=>{
+    afterPrayerType=e.target.value;setLocal('afterPrayerType',afterPrayerType);renderAdhkar();
+  });
+  $('#resetAdhkar').addEventListener('click',()=>{
+    if(confirm('تصفير عدادات الأذكار في هذا الباب؟')){
+      currentAdhkarItems().forEach(a=>delete dhikrCounts[a.id]);
+      setLocal('dhikrCounts',dhikrCounts);renderAdhkar();notify('تم تصفير عدادات هذا الباب');
+    }
+  });
+  renderAdhkarCategories();
+}
 function renderTasbeeh(){const n=tasbeehCounts[tasbeehPhrase]||0;const percentage=tasbeehGoal?Math.min(100,Math.floor(100*(n%tasbeehGoal)/tasbeehGoal)):100;const shownPercentage=tasbeehGoal&&n>0&&n%tasbeehGoal===0?100:percentage;$('#tasbeehCount').textContent=arabic(n);$('#tasbeehPhrase').textContent=tasbeehPhrase;$('#tasbeehTotal').textContent=arabic(tasbeehTotal);$('#tasbeehPercent').textContent=tasbeehGoal?`${arabic(shownPercentage)}٪`:'∞';$('#tasbeehActivePhrase').textContent=tasbeehPhrase;$('#tasbeehTap').style.background=`conic-gradient(#2d9e77 ${shownPercentage}%, #edf4ed ${shownPercentage}%)`;$$('.dhikr-pill').forEach(el=>el.classList.toggle('active',el.dataset.phrase===tasbeehPhrase));$('#tasbeehGoal').value=String(tasbeehGoal)}
 function tapTasbeeh(){const old=tasbeehCounts[tasbeehPhrase]||0;tasbeehCounts[tasbeehPhrase]=old+1;tasbeehTotal++;setLocal('tasbeehCounts',tasbeehCounts);setLocal('tasbeehTotal',tasbeehTotal);renderTasbeeh();if(tasbeehGoal&&(old+1)%tasbeehGoal===0)notify(`ما شاء الله، أكملت ${arabic(tasbeehGoal)} تسبيحة.`)}
 function setupTasbeeh(){$('#tasbeehTap').addEventListener('click',tapTasbeeh);$$('.dhikr-pill').forEach(el=>el.addEventListener('click',()=>{tasbeehPhrase=el.dataset.phrase;setLocal('tasbeehPhrase',tasbeehPhrase);renderTasbeeh()}));$('#tasbeehGoal').addEventListener('change',e=>{tasbeehGoal=+e.target.value;setLocal('tasbeehGoal',tasbeehGoal);renderTasbeeh()});$('#tasbeehReset').addEventListener('click',()=>{if(confirm('تصفير عداد الذكر الحالي فقط؟')){tasbeehCounts[tasbeehPhrase]=0;setLocal('tasbeehCounts',tasbeehCounts);renderTasbeeh();notify('تم تصفير هذا الذكر')}});document.addEventListener('keydown',e=>{if(e.code==='Space'&&activePage==='tasbeeh'&&!e.repeat&&!e.target.closest('input,textarea,select,button')){e.preventDefault();tapTasbeeh()}});renderTasbeeh()}
