@@ -10,7 +10,8 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const ROOT=path.dirname(fileURLToPath(import.meta.url));
-const PORT=Number(process.env.PORT||3000);
+const flag=process.argv.indexOf('--port');
+const PORT=Number((flag>=0?process.argv[flag+1]:null)||process.env.PORT||3000);
 const KEY=process.env.OPENAI_API_KEY||'';
 const MODEL=process.env.OPENAI_MODEL||'gpt-6-astra';
 const DOMAINS=['binbaz.org.sa','islamweb.net','islamqa.info','dorar.net'];
@@ -19,10 +20,8 @@ const hits=new Map();
 // Directory of whole-surah MP3Quran recordings. Do not guess edition folder names.
 const RECITER_TARGETS=[
  {id:'afasy',name:'مشاري العفاسي',aliases:['مشاري العفاسي']},
- {id:'sudais',name:'عبد الرحمن السديس',aliases:['عبدالرحمن السديس','عبد الرحمن السديس']},
  {id:'husary',name:'محمود خليل الحصري',aliases:['محمود خليل الحصري']},
  {id:'maher',name:'ماهر المعيقلي',aliases:['ماهر المعيقلي']},
- {id:'minshawi',name:'محمد صديق المنشاوي',aliases:['محمد صديق المنشاوي']},
  {id:'abdulbasit',name:'عبد الباسط عبد الصمد',aliases:['عبدالباسط عبدالصمد','عبد الباسط عبد الصمد']},
  {id:'ghamdi',name:'سعد الغامدي',aliases:['سعد الغامدي']},
  {id:'shuraim',name:'سعود الشريم',aliases:['سعود الشريم']},
